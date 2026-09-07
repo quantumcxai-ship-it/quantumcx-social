@@ -1,0 +1,63 @@
+name: Refresh Instagram token
+
+# WHY THIS EXISTS. Instagram long-lived tokens expire after 60 days. Without a
+# refresh, this schedule stops publishing about two months in - and it stops
+# quietly, because a dead token looks like any other failed run. Meta's own
+# guidance is to refresh every 50-55 days; this runs on the 1st and 15th so a
+# single missed run cannot let the token lapse.
+#
+# Refreshing returns a NEW token, so the repository secret has to be rewritten.
+# That needs a Personal Access Token with permission to update secrets, stored
+# as GH_PAT. If you have not set GH_PAT, this workflow will tell you the new
+# token could not be stored and the job fails loudly rather than pretending.
+on:
+  schedule:
+    - cron: "0 3 1,15 * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Refresh the long-lived token
+        id: refresh
+        env:
+          IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
+        run: |
+          set -euo pipefail
+          RESP=$(curl -sS -G "https://graph.instagram.com/refresh_access_token" \
+            --data-urlencode "grant_type=ig_refresh_token" \
+            --data-urlencode "access_token=${IG_ACCESS_TOKEN}")
+
+          # Never echo the response: it contains the token.
+          if ! echo "$RESP" | grep -q '"access_token"'; then
+            echo "Refresh failed. Instagram returned an error (token value withheld)."
+            echo "$RESP" | python3 -c "import sys,json;d=json.load(sys.stdin);print('error:', json.dumps(d.get('error', d))[:300])" || true
+            echo "If the token has already expired past 60 days it cannot be refreshed."
+            echo "Generate a new long-lived token in the Meta app and update the IG_ACCESS_TOKEN secret by hand."
+            exit 1
+          fi
+
+          NEW=$(echo "$RESP" | python3 -c "import sys,json;print(json.load(sys.stdin)['access_token'])")
+          EXPIRES=$(echo "$RESP" | python3 -c "import sys,json;print(json.load(sys.stdin).get('expires_in','unknown'))")
+          echo "::add-mask::$NEW"
+          echo "new token obtained, valid for $EXPIRES seconds (~$((EXPIRES/86400)) days)"
+          echo "token=$NEW" >> "$GITHUB_OUTPUT"
+
+      - name: Store the new token as the repository secret
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+          NEW_TOKEN: ${{ steps.refresh.outputs.token }}
+        run: |
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "GH_PAT is not set, so the refreshed token cannot be written back."
+            echo "The token WAS refreshed but the secret still holds the old value."
+            echo "Either add a GH_PAT secret with 'secrets: write' on this repository,"
+            echo "or refresh manually every 50 days."
+            exit 1
+          fi
+          printf '%s' "$NEW_TOKEN" | gh secret set IG_ACCESS_TOKEN --repo "${{ github.repository }}"
+          echo "IG_ACCESS_TOKEN updated. Next refresh in two weeks."

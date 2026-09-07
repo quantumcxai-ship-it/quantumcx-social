@@ -1,0 +1,95 @@
+name: Post to Instagram
+
+# Cron times are UTC. The schedule is written in IST (UTC+5:30):
+#   12:00 IST = 06:30 UTC
+#   19:30 IST = 14:00 UTC
+#   22:30 IST = 17:00 UTC
+# Each run fires a few minutes after its slot. GitHub's scheduler is not
+# punctual - runs are commonly 5-15 minutes late and are occasionally skipped
+# entirely - so the script looks back 8 hours for anything unposted rather than
+# only checking the current minute. A late or missed run catches up on its own.
+on:
+  schedule:
+    - cron: "35 6 * * *"
+    - cron: "5 14 * * *"
+    - cron: "5 17 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Log what would be posted without publishing"
+        type: boolean
+        default: true
+
+concurrency:
+  # Two overlapping runs would both read the same state file and could
+  # double-post. Never cancel a run in progress: it may be mid-publish.
+  group: instagram-publish
+  cancel-in-progress: false
+
+permissions:
+  contents: write        # needed to commit the posted-state file back
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Publish anything due
+        env:
+          IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
+          IG_USER_ID: ${{ secrets.IG_USER_ID }}
+          # raw.githubusercontent.com serves the cards publicly, which the
+          # Graph API requires - it fetches image_url rather than accepting an
+          # upload. This is why the repository must be public.
+          IMAGE_BASE_URL: https://raw.githubusercontent.com/${{ github.repository }}/${{ github.ref_name }}/cards
+          # Meta retires API versions. Set this as a repository variable to
+          # bump it without touching code if a run reports NONEXISTENT_VERSION.
+          IG_API_VERSION: ${{ vars.IG_API_VERSION || 'v21.0' }}
+        run: |
+          python scripts/post_instagram.py \
+            ${{ (github.event_name == 'workflow_dispatch' && inputs.dry_run) && '--dry-run' || '' }}
+
+      - name: Commit the posted-state file
+        # Runs even if publishing partly failed, so posts that DID go out are
+        # recorded and never sent twice.
+        if: always()
+        run: |
+          if [ -n "$(git status --porcelain state/)" ]; then
+            git config user.name  "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add state/
+            git commit -m "Instagram: record published posts [skip ci]"
+            git push
+          else
+            echo "no state change to commit"
+          fi
+
+  # A scheduled workflow on a public repository is disabled after 60 days with
+  # no commit on the default branch. Posting commits state most days, which
+  # already resets that timer - this is the belt to that pair of braces, in
+  # case a long stretch of runs posts nothing.
+  keepalive:
+    runs-on: ubuntu-latest
+    needs: publish
+    if: always()
+    steps:
+      - uses: actions/checkout@v4
+      - name: Touch a heartbeat file monthly
+        run: |
+          DAY=$(date -u +%d)
+          if [ "$DAY" = "01" ]; then
+            mkdir -p state
+            date -u +"%Y-%m-%dT%H:%M:%SZ" > state/heartbeat.txt
+            git config user.name  "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add state/heartbeat.txt
+            git commit -m "keepalive: reset the 60-day workflow timer [skip ci]" || exit 0
+            git push
+          else
+            echo "not the 1st; nothing to do"
+          fi
