@@ -1,0 +1,104 @@
+name: Token health
+
+# WHY THIS EXISTS. Both schedules die quietly when a token lapses. A dead token
+# produces a failed run buried in the Actions tab, and if you are not looking,
+# three weeks of posts vanish before anyone notices.
+#
+# LinkedIn is the real risk: its tokens last 60 days and the self-serve tier has
+# no automatic refresh, so renewal is a manual job. Instagram refreshes itself
+# on the 1st and 15th, but a refresh can fail silently, so it is checked too.
+#
+# Runs every Monday. Fails - which sends you an email - when a token is dead,
+# or when LinkedIn's is within WARN_DAYS of expiring. A red run here is the
+# warning; a red run on the posting workflows is already too late.
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # LinkedIn tokens live 60 days. Warn with enough runway that a missed Monday
+  # still leaves a week to act.
+  TOKEN_LIFETIME_DAYS: "60"
+  WARN_DAYS: "14"
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Instagram token is alive
+        env:
+          T: ${{ secrets.IG_ACCESS_TOKEN }}
+          V: ${{ vars.IG_API_VERSION || 'v21.0' }}
+        run: |
+          set -uo pipefail
+          RESP=$(curl -sS -G "https://graph.instagram.com/$V/me" \
+            --data-urlencode "fields=id,username" --data-urlencode "access_token=$T")
+          if echo "$RESP" | grep -q '"error"'; then
+            echo "INSTAGRAM TOKEN IS DEAD."
+            echo "$RESP" | python3 -c "import sys,json;print(json.dumps(json.load(sys.stdin).get('error',{}),indent=2))"
+            echo ""
+            echo "The refresh workflow should prevent this. Check whether"
+            echo "'Refresh Instagram token' has been failing."
+            exit 1
+          fi
+          echo "Instagram: alive (@$(echo "$RESP" | python3 -c "import sys,json;print(json.load(sys.stdin).get('username','?'))"))"
+
+      - name: LinkedIn token is alive
+        env:
+          T: ${{ secrets.LI_ACCESS_TOKEN }}
+        run: |
+          set -uo pipefail
+          CODE=$(curl -sS -o /tmp/li.json -w "%{http_code}" \
+            "https://api.linkedin.com/v2/userinfo" -H "Authorization: Bearer $T")
+          if [ "$CODE" != "200" ]; then
+            echo "LINKEDIN TOKEN IS DEAD (HTTP $CODE)."
+            head -c 400 /tmp/li.json
+            echo ""
+            echo ""
+            echo "TO FIX: linkedin.com/developers -> your app -> Auth ->"
+            echo "OAuth 2.0 tools -> Create token (w_member_social, openid, profile)."
+            echo "Then:  gh secret set LI_ACCESS_TOKEN"
+            echo "And:   update state/li_token_issued.txt to today's date."
+            exit 1
+          fi
+          echo "LinkedIn: alive ($(python3 -c "import json;print(json.load(open('/tmp/li.json')).get('name','?'))"))"
+
+      - name: LinkedIn expiry countdown
+        run: |
+          set -uo pipefail
+          F=state/li_token_issued.txt
+          if [ ! -f "$F" ]; then
+            echo "$F is missing, so days-remaining cannot be computed."
+            echo "Create it containing the date the current token was generated (YYYY-MM-DD)."
+            exit 1
+          fi
+          ISSUED=$(tr -d '[:space:]' < "$F")
+          python3 - "$ISSUED" "$TOKEN_LIFETIME_DAYS" "$WARN_DAYS" <<'PY'
+          import datetime, sys
+          issued = datetime.date.fromisoformat(sys.argv[1])
+          life, warn = int(sys.argv[2]), int(sys.argv[3])
+          expires = issued + datetime.timedelta(days=life)
+          left = (expires - datetime.date.today()).days
+          print("LinkedIn token issued:  %s" % issued)
+          print("expected expiry:        %s" % expires)
+          print("days remaining:         %d" % left)
+          if left <= 0:
+            print("\nThe token is past its expected lifetime. Renew it now.")
+            sys.exit(1)
+          if left <= warn:
+            print("\nRENEW WITHIN %d DAYS." % left)
+            print("linkedin.com/developers -> app -> Auth -> OAuth 2.0 tools -> Create token")
+            print("then: gh secret set LI_ACCESS_TOKEN")
+            print("and:  put today's date in state/li_token_issued.txt")
+            sys.exit(1)
+          print("\nNo action needed. Next check in a week.")
+          PY
+
+      - name: Result
+        run: echo "Both tokens healthy and LinkedIn has runway."
