@@ -64,6 +64,9 @@ jobs:
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git add state/
             git commit -m "Instagram: record published posts [skip ci]"
+            # Rebase before pushing: the LinkedIn workflow commits to the same
+            # branch and can land between this checkout and this push.
+            git pull --rebase --autostash origin main
             git push
           else
             echo "no state change to commit"

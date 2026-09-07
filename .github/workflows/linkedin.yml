@@ -1,0 +1,61 @@
+name: Post to LinkedIn
+
+# 18:30 IST = 13:00 UTC. Fires a few minutes after, on Tue/Wed/Thu only -
+# the schedule itself carries no other days, and the script looks back 8 hours
+# so a late or skipped run catches up rather than dropping the post.
+#
+# Cron day-of-week: 2=Tue, 3=Wed, 4=Thu.
+on:
+  schedule:
+    - cron: "5 13 * * 2,3,4"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Log what would be posted without publishing"
+        type: boolean
+        default: true
+
+concurrency:
+  group: linkedin-publish
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Publish anything due
+        env:
+          LI_ACCESS_TOKEN: ${{ secrets.LI_ACCESS_TOKEN }}
+          LI_PERSON_URN: ${{ secrets.LI_PERSON_URN }}
+          # LinkedIn retires versioned APIs on a schedule and rejects retired
+          # ones with 426. Set LINKEDIN_VERSION as a repository variable to bump
+          # it without a code change.
+          LINKEDIN_VERSION: ${{ vars.LINKEDIN_VERSION || '202608' }}
+        run: |
+          python scripts/post_linkedin.py \
+            ${{ (github.event_name == 'workflow_dispatch' && inputs.dry_run) && '--dry-run' || '' }}
+
+      - name: Commit the posted-state file
+        if: always()
+        run: |
+          if [ -n "$(git status --porcelain state/)" ]; then
+            git config user.name  "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add state/
+            # Rebase before pushing: the Instagram workflow commits to the same
+            # branch and can land between this checkout and this push.
+            git commit -m "LinkedIn: record published posts [skip ci]"
+            git pull --rebase --autostash origin main
+            git push
+          else
+            echo "no state change to commit"
+          fi
