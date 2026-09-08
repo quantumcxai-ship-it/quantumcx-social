@@ -1,0 +1,74 @@
+name: Post to X
+
+# 19:15 IST = 13:45 UTC. Fires at 13:52 - an offbeat minute, because scheduled
+# runs queue hardest on the hour and half hour and GitHub gives no delivery
+# guarantee at any minute. The script looks back 8 hours, so a late or skipped
+# run catches up rather than dropping the post.
+#
+# ONE POST A DAY, AND WHY THAT IS FIXED. X bills per post under pay-per-use.
+# The prepaid balance buys 365 posts at the standard rate and no more, so
+# MAX_PER_RUN is 1 in the script and there is exactly one cron here. Adding a
+# second slot does not just double the cadence - it halves how long the balance
+# lasts.
+on:
+  schedule:
+    - cron: "52 13 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Log what would be posted without publishing"
+        type: boolean
+        default: true
+
+concurrency:
+  # Two overlapping runs would both read the same state file and could
+  # double-post - which on X costs real money, not just embarrassment.
+  group: x-publish
+  cancel-in-progress: false
+
+permissions:
+  contents: write        # needed to commit the posted-state file back
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Prove the OAuth signer before spending anything
+        # Costs nothing and needs no credentials. A broken signer returns a
+        # flat 401 that looks identical to a bad key, so this runs first.
+        run: python scripts/post_x.py --selftest
+
+      - name: Publish anything due
+        env:
+          X_API_KEY: ${{ secrets.X_API_KEY }}
+          X_API_SECRET: ${{ secrets.X_API_SECRET }}
+          X_ACCESS_TOKEN: ${{ secrets.X_ACCESS_TOKEN }}
+          X_ACCESS_SECRET: ${{ secrets.X_ACCESS_SECRET }}
+          # Alt text is a second billable call per post. Set this repository
+          # variable to 1 once the real burn rate on the balance is known.
+          X_ALT_TEXT: ${{ vars.X_ALT_TEXT || '0' }}
+        run: |
+          python scripts/post_x.py \
+            ${{ (github.event_name == 'workflow_dispatch' && inputs.dry_run) && '--dry-run' || '' }}
+
+      - name: Commit the posted-state file
+        if: always()
+        run: |
+          if [ -n "$(git status --porcelain state/)" ]; then
+            git config user.name  "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add state/
+            git commit -m "X: record published posts [skip ci]"
+            # Rebase before pushing: the Instagram and LinkedIn workflows commit
+            # to the same branch and can land between this checkout and this push.
+            git pull --rebase --autostash origin main
+            git push
+          else
+            echo "no state change to commit"
+          fi
