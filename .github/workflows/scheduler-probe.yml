@@ -1,0 +1,41 @@
+name: Scheduler probe
+
+# TEMPORARY. Delete once the question is answered.
+#
+# WHY. As of 2026-09-08 no scheduled run has ever fired in this repository -
+# three workflows, three different times, zero schedule events - while every
+# manual dispatch works. That leaves two possibilities that look identical from
+# the outside:
+#
+#   1. GitHub's scheduler has not activated for this repository yet. It was
+#      created 2026-09-07, and a new repository's first scheduled run is
+#      commonly late by many hours.
+#   2. Something about our cron lines or workflow files is wrong.
+#
+# This probe separates them. It publishes nothing, touches no credential and
+# calls no API - it only records that a schedule event reached the runner. If
+# this fires and the posters do not, the fault is ours. If nothing fires, the
+# scheduler is not running for this repository and no amount of editing cron
+# lines will help.
+on:
+  schedule:
+    - cron: "35 16 * * *"
+    - cron: "5 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Record that a schedule event arrived
+        run: |
+          echo "event:     ${{ github.event_name }}"
+          echo "time now:  $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            echo "SCHEDULED RUNS WORK in this repository."
+          else
+            echo "Manual dispatch. Proves nothing about the scheduler."
+          fi
