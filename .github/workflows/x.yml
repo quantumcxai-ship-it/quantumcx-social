@@ -19,6 +19,10 @@ on:
         description: "Log what would be posted without publishing"
         type: boolean
         default: true
+      verify:
+        description: "Prove the credentials with one read call, publish nothing"
+        type: boolean
+        default: false
 
 concurrency:
   # Two overlapping runs would both read the same state file and could
@@ -54,8 +58,17 @@ jobs:
           # variable to 1 once the real burn rate on the balance is known.
           X_ALT_TEXT: ${{ vars.X_ALT_TEXT || '0' }}
         run: |
-          python scripts/post_x.py \
-            ${{ (github.event_name == 'workflow_dispatch' && inputs.dry_run) && '--dry-run' || '' }}
+          # A scheduled run passes no inputs and therefore publishes. Verify
+          # wins over dry-run when both are ticked, because it is the stricter
+          # check and the one someone ticking both is asking for.
+          ARGS=""
+          if [ "${{ inputs.verify }}" = "true" ]; then
+            ARGS="--verify"
+          elif [ "${{ inputs.dry_run }}" = "true" ]; then
+            ARGS="--dry-run"
+          fi
+          echo "running: post_x.py $ARGS"
+          python scripts/post_x.py $ARGS
 
       - name: Commit the posted-state file
         if: always()

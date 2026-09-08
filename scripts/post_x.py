@@ -249,6 +249,50 @@ def publish(creds, text, media_id):
 
 # --------------------------------------------------------------------------
 
+def verify(creds):
+    """Prove the four credentials against the live API without publishing.
+
+    A dry run cannot tell a correct key from a wrong one, because it makes no
+    call at all. This makes exactly one read - GET /2/users/me - which exercises
+    the same signing path the poster uses and fails the same way a bad
+    credential would, but leaves nothing on the timeline.
+
+    It costs one read under pay-per-use, which is a third of the price of a post
+    and far less than discovering the problem when a scheduled slot goes red.
+
+    WHAT IT DOES NOT PROVE. A read succeeds on a read-only token, so this
+    confirms the keys and the signature but not the write permission. The
+    developer console showing 'Read and write' on the access token row is the
+    evidence for that half.
+    """
+    url = API + "/2/users/me"
+    status, resp = http(url, creds, method="GET")
+    if status != 200:
+        print("CREDENTIALS REJECTED (HTTP %s)" % status)
+        print(json.dumps(resp, indent=2)[:600])
+        print("")
+        if status == 401:
+            print("401 means the signature did not validate. The signer is")
+            print("self-tested, so suspect the secrets: a truncated paste, a")
+            print("stray space, or an access token generated BEFORE the app")
+            print("permission was set to Read and write.")
+        elif status == 403:
+            print("403 usually means the token lacks write permission, or the")
+            print("app is not connected to a project.")
+        elif status == 429:
+            print("429 is a rate limit, not a credential problem. Try again.")
+        return 1
+    me = resp.get("data", {})
+    print("CREDENTIALS OK")
+    print("  authenticated as: @%s (%s)" % (me.get("username", "?"), me.get("id", "?")))
+    print("  name:             %s" % me.get("name", "?"))
+    print("")
+    print("This proves the four keys and the OAuth 1.0a signature. Write")
+    print("permission is evidenced by the console showing 'Read and write'")
+    print("on the access token; the first real post confirms it outright.")
+    return 0
+
+
 def load_state(path):
     if os.path.exists(path):
         with io.open(path, encoding="utf-8") as f:
@@ -286,6 +330,8 @@ def main():
     ap.add_argument("--cards", default=CARDS)
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--selftest", action="store_true")
+    ap.add_argument("--verify", action="store_true",
+                    help="prove the credentials against the live API without posting")
     ap.add_argument("--now", help="override current time, ISO 8601 UTC, for testing")
     args = ap.parse_args()
 
@@ -297,6 +343,9 @@ def main():
     if not args.dry_run and not all(creds):
         raise SystemExit("X_API_KEY, X_API_SECRET, X_ACCESS_TOKEN and "
                          "X_ACCESS_SECRET must all be set")
+
+    if args.verify:
+        return verify(creds)
 
     now = (datetime.datetime.fromisoformat(args.now).replace(tzinfo=datetime.timezone.utc)
            if args.now else datetime.datetime.now(datetime.timezone.utc))
