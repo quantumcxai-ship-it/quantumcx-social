@@ -5,14 +5,27 @@ name: Post to X
 # guarantee at any minute. The script looks back 8 hours, so a late or skipped
 # run catches up rather than dropping the post.
 #
+# TWO CRONS, ONE POST. The second at 17:52 UTC (23:22 IST) exists only to catch
+# a dropped first run. Instagram gets this for free because it already fires
+# three times a day; X posts once, so without a second attempt a dropped run
+# pushes that day's card onto the next day and shifts the whole calendar by one.
+#
+# It cannot double-post. The slot is recorded in state/posted_x.json the moment
+# it publishes, and the catch-up run finds nothing due and exits without calling
+# the API at all - so an idle catch-up costs nothing. The concurrency group also
+# serialises the two, so the later run always reads state the earlier one wrote.
+#
+# 17:52 UTC is 4 hours after the slot, inside the script's 8-hour lookback. Move
+# it later than 21:45 UTC and it falls outside that window and will never post.
+#
 # ONE POST A DAY, AND WHY THAT IS FIXED. X bills per post under pay-per-use.
 # The prepaid balance buys 365 posts at the standard rate and no more, so
-# MAX_PER_RUN is 1 in the script and there is exactly one cron here. Adding a
-# second slot does not just double the cadence - it halves how long the balance
-# lasts.
+# MAX_PER_RUN is 1 in the script. Adding a second *slot* - as opposed to this
+# second attempt at the same slot - would halve how long the balance lasts.
 on:
   schedule:
     - cron: "52 13 * * *"
+    - cron: "52 17 * * *"
   workflow_dispatch:
     inputs:
       dry_run:
