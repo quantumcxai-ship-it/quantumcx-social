@@ -8,9 +8,16 @@ name: Post to Instagram
 # punctual - runs are commonly 5-15 minutes late and are occasionally skipped
 # entirely - so the script looks back 8 hours for anything unposted rather than
 # only checking the current minute. A late or missed run catches up on its own.
+#
+# WHY :47 AND NOT :35. Scheduled runs queue hardest on the hour and half hour,
+# because that is where almost everyone points their cron. :35 sits in the tail
+# of the :30 spike. An offbeat minute is the one lever available for scheduling
+# reliability, so the morning slot uses :47. This does not guarantee the run
+# fires - GitHub gives no such guarantee for any minute - it only shortens the
+# queue. The 8-hour lookback remains the thing that actually saves a lost post.
 on:
   schedule:
-    - cron: "35 6 * * *"
+    - cron: "47 6 * * *"
     - cron: "5 14 * * *"
     - cron: "5 17 * * *"
   workflow_dispatch:
