@@ -131,3 +131,70 @@ that publishing is about to stop.
 Edit `schedule/instagram.csv`. Rows are matched on `scheduled_at`, so changing
 a time creates a new slot. Delete an entry from `state/posted.json` to allow a
 slot to publish again.
+
+---
+
+## Triggering: why an outside cron service
+
+GitHub's own scheduler has **never fired in this repository**. Every workflow is
+`state=active`, the repo is public, `main` is the default branch, Actions is
+enabled — and the `event=schedule` run count is zero. A probe workflow that
+publishes nothing and calls no API did not fire either, which rules out our cron
+lines and our credentials as the cause.
+
+Manual dispatch works perfectly. So the trigger comes from outside.
+
+`publish.yml` is the entry point. It takes **no inputs**, deliberately: the
+per-platform workflows default `dry_run` to true, so a dispatch that forgot to
+send inputs would produce a green run that published nothing — the one failure
+mode that looks like success. With no inputs there is nothing to get wrong.
+
+It runs all three platforms on every trigger. Each script reads its own schedule
+and exits without calling any API when nothing is due, so an idle run costs
+nothing — including on X, where calls are billed.
+
+### Setting up the trigger
+
+Create a **fine-grained personal access token** (github.com → Settings →
+Developer settings → Personal access tokens → Fine-grained):
+
+| Setting | Value |
+|---|---|
+| Repository access | Only select repositories → this one |
+| Permissions | **Contents: Read and write** |
+| Expiration | 1 year (calendar a renewal) |
+
+That scope lets the token trigger this repository and nothing else. It cannot
+read your other repositories and it cannot reach the Meta, LinkedIn or X
+credentials, which stay in GitHub Actions secrets and are never sent anywhere.
+
+Then at [cron-job.org](https://cron-job.org) (free), create jobs with:
+
+- **URL** `https://api.github.com/repos/OWNER/REPO/dispatches`
+- **Method** POST
+- **Headers**
+  - `Authorization: Bearer <the PAT>`
+  - `Accept: application/vnd.github+json`
+  - `X-GitHub-Api-Version: 2022-11-28`
+  - `Content-Type: application/json`
+- **Body** `{"event_type":"publish"}`
+- **Timezone** Asia/Kolkata
+
+Four jobs, at **12:05, 18:35, 19:35 and 22:35 IST** — a few minutes after each
+slot, so every platform is covered:
+
+| Trigger (IST) | Catches |
+|---|---|
+| 12:05 | Instagram 12:00 |
+| 18:35 | LinkedIn 18:30 (Tue/Wed/Thu) |
+| 19:35 | X 19:15 and Instagram 19:30 |
+| 22:35 | Instagram 22:30 |
+
+A successful call returns **HTTP 204** with an empty body. Anything else means
+the token or the URL is wrong.
+
+### If GitHub's scheduler ever wakes up
+
+Leave the external trigger in place. Both paths can fire safely: the state files
+record every published slot, all four publishing workflows share one concurrency
+group, and whichever runs second finds nothing due.
