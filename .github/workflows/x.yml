@@ -40,7 +40,7 @@ on:
 concurrency:
   # Two overlapping runs would both read the same state file and could
   # double-post - which on X costs real money, not just embarrassment.
-  group: x-publish
+  group: social-publish
   cancel-in-progress: false
 
 permissions:

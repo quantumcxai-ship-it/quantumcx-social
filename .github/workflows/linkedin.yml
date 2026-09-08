@@ -16,7 +16,7 @@ on:
         default: true
 
 concurrency:
-  group: linkedin-publish
+  group: social-publish
   cancel-in-progress: false
 
 permissions:

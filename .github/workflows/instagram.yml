@@ -30,7 +30,7 @@ on:
 concurrency:
   # Two overlapping runs would both read the same state file and could
   # double-post. Never cancel a run in progress: it may be mid-publish.
-  group: instagram-publish
+  group: social-publish
   cancel-in-progress: false
 
 permissions:
