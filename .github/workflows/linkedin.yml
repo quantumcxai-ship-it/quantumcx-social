@@ -41,7 +41,7 @@ jobs:
           # it without a code change.
           LINKEDIN_VERSION: ${{ vars.LINKEDIN_VERSION || '202608' }}
         run: |
-          python scripts/post_linkedin.py \
+          python scripts/post_linkedin.py --queue queue/linkedin \
             ${{ (github.event_name == 'workflow_dispatch' && inputs.dry_run) && '--dry-run' || '' }}
 
       - name: Commit the posted-state file

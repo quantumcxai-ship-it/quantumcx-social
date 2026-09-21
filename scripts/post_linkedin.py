@@ -38,8 +38,10 @@ import os
 import sys
 import urllib.error
 import urllib.request
+from pathlib import Path
 
 API = "https://api.linkedin.com"
+QUEUE_DEFAULT = "queue/linkedin"
 IST = datetime.timezone(datetime.timedelta(hours=5, minutes=30))
 
 SCHEDULE = "schedule/linkedin.csv"
@@ -137,7 +139,7 @@ def upload_image(token, version, person_urn, path):
     return image_urn
 
 
-def publish(token, version, person_urn, image_urn, commentary, alt_text):
+def publish(token, version, person_urn, commentary, image_urn=None, alt_text=""):
     payload = {
         "author": person_urn,
         "commentary": commentary,
@@ -147,10 +149,11 @@ def publish(token, version, person_urn, image_urn, commentary, alt_text):
             "targetEntities": [],
             "thirdPartyDistributionChannels": [],
         },
-        "content": {"media": {"altText": alt_text[:300], "id": image_urn}},
         "lifecycleState": "PUBLISHED",
         "isReshareDisabledByAuthor": False,
     }
+    if image_urn:
+        payload["content"] = {"media": {"altText": alt_text[:300], "id": image_urn}}
     status, body, hdrs = http(API + "/rest/posts", payload, headers(token, version))
     if status not in (200, 201):
         raise RuntimeError("post creation failed (HTTP %s): %s" % (status, json.dumps(body)[:500]))
@@ -158,11 +161,42 @@ def publish(token, version, person_urn, image_urn, commentary, alt_text):
     return hdrs.get("x-restli-id") or hdrs.get("X-RestLi-Id") or body.get("id", "created")
 
 
+def queue_rows(directory, state):
+    """Load unposted approved fleet markdown files as plain LinkedIn text posts."""
+    rows = []
+    for path in sorted(Path(directory).glob("*.md")):
+        text = path.read_text(encoding="utf-8")
+        if not text.startswith("---\n"):
+            print("    FAILED: %s has no frontmatter" % path.name)
+            continue
+        _, front, rest = text.split("---\n", 2)
+        metadata = {}
+        for line in front.splitlines():
+            if ":" in line:
+                key, value = line.split(":", 1)
+                metadata[key.strip()] = value.strip().strip('"').strip("'")
+        if metadata.get("platform", "").lower() != "linkedin":
+            print("    SKIPPED: %s is not a LinkedIn draft" % path.name)
+            continue
+        if "queue:" + path.name in state["posted"]:
+            continue
+        marker = "## Draft post"
+        if marker not in rest:
+            print("    FAILED: %s has no '## Draft post' section" % path.name)
+            continue
+        body = rest.split(marker, 1)[1]
+        body = body.split("\n## ", 1)[0].strip()
+        if body:
+            rows.append({"key": path.name, "caption": body})
+    return rows
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--schedule", default=SCHEDULE)
     ap.add_argument("--state", default=STATE)
     ap.add_argument("--cards", default=CARDS)
+    ap.add_argument("--queue", help="directory of approved fleet LinkedIn drafts")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--now", help="override current time, ISO 8601 UTC, for testing")
     args = ap.parse_args()
@@ -182,19 +216,45 @@ def main():
     with open(args.schedule, encoding="utf-8") as f:
         rows = list(csv.DictReader(f))
     state = load_state(args.state)
-    due = due_rows(rows, state, now)
+    queued = queue_rows(args.queue, state) if args.queue else []
+    scheduled_due = due_rows(rows, state, now)
+    due = (queued[:MAX_PER_RUN] + scheduled_due[:MAX_PER_RUN]) if args.queue else scheduled_due
 
     print("now (UTC): %s" % now.isoformat(timespec="seconds"))
     print("LinkedIn-Version: %s" % version)
-    print("schedule rows: %d | already posted: %d | due now: %d"
-          % (len(rows), len(state["posted"]), len(due)))
+    source_count = (len(rows) + len(queued)) if args.queue else len(rows)
+    print("%s rows: %d | already posted: %d | due now: %d"
+          % ("queue + schedule" if args.queue else "schedule", source_count, len(state["posted"]), len(due)))
 
     if not due:
         print("nothing due. exiting cleanly.")
         return 0
 
     failures = 0
-    for r in due[:MAX_PER_RUN]:
+    for r in due:
+        if args.queue and "key" in r:
+            key = "queue:" + r["key"]
+            print("\n>>> %s  [approved queue]" % r["key"])
+            print("    %s" % r["caption"].split("\n")[0][:100])
+            if key in state["posted"]:
+                print("    already posted")
+                continue
+            if args.dry_run:
+                print("      DRY RUN - would publish text post")
+                continue
+            try:
+                post_id = publish(token, version, person, r["caption"])
+                state["posted"][key] = {
+                    "post_id": post_id,
+                    "published_at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
+                }
+                save_state(args.state, state)
+                print("    published: %s" % post_id)
+            except Exception as e:
+                failures += 1
+                print("    FAILED: %s" % e)
+            continue
+
         card = os.path.join(args.cards, r["image"])
         print("\n>>> %s  [%s]  %s" % (r["scheduled_at"], r["pillar"], r["image"]))
         print("    %s" % r["caption"].split("\n")[0][:100])
@@ -208,7 +268,7 @@ def main():
         try:
             image_urn = upload_image(token, version, person, card)
             print("    image uploaded: %s" % image_urn)
-            post_id = publish(token, version, person, image_urn, r["caption"], r["alt_text"])
+            post_id = publish(token, version, person, r["caption"], image_urn, r["alt_text"])
             state["posted"][r["scheduled_at"]] = {
                 "post_id": post_id, "library_id": r["post_id"],
                 "published_at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),

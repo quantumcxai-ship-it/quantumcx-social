@@ -153,6 +153,11 @@ It runs all three platforms on every trigger. Each script reads its own schedule
 and exits without calling any API when nothing is due, so an idle run costs
 nothing — including on X, where calls are billed.
 
+Approved LinkedIn drafts can also be placed in `queue/linkedin/` as markdown files
+with `platform: linkedin` frontmatter and a `## Draft post` section. The publisher
+processes at most one queued draft per run, records it in
+`state/posted_linkedin.json`, and leaves the scheduled CSV feed unchanged.
+
 ### Setting up the trigger
 
 Create a **fine-grained personal access token** (github.com → Settings →

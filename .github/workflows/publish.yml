@@ -69,7 +69,7 @@ jobs:
           LI_ACCESS_TOKEN: ${{ secrets.LI_ACCESS_TOKEN }}
           LI_PERSON_URN: ${{ secrets.LI_PERSON_URN }}
           LINKEDIN_VERSION: ${{ vars.LINKEDIN_VERSION || '202608' }}
-        run: python scripts/post_linkedin.py
+        run: python scripts/post_linkedin.py --queue queue/linkedin
 
       - name: X
         id: x
